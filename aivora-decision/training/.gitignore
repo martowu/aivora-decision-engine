@@ -1,0 +1,22 @@
+# 红线：数据不进 git（定稿 §7-C / training-data README）
+# 输出目录
+../out/
+out/
+*.csv
+*.parquet
+
+# 盐值与可逆映射表
+*salt*.txt
+*pseudonym_map*
+
+# 评估报告产出（存 MinIO）
+../reports/
+reports/
+
+# 模型工件（训练输出，存 MinIO，不入库）
+artifacts/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

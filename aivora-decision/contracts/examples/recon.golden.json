@@ -1,0 +1,68 @@
+[
+  {
+    "id": "clean_matched_auto",
+    "desc": "高置信 MATCHED + 低风险 + 低金额 → AUTO",
+    "context": {
+      "f": {"is_multi_mapping": 0, "has_split_merge": 0, "currency_mismatch": 0,
+            "supplier_exact_match": 1, "amount_abs_diff": 0.0},
+      "payment": {"amount": 50000, "currency": "CNY", "channel": "BANK_TRANSFER", "payer_id": "CP-01"},
+      "calib": {"label": "MATCHED", "conf": 0.98, "matched": 0.98, "partial": 0.01, "unmatched": 0.01}
+    },
+    "action": "AUTO"
+  },
+  {
+    "id": "amount_above_cap",
+    "desc": "高置信但超金额上限 → REVIEW（硬规则优先于模型分数）",
+    "context": {
+      "f": {"is_multi_mapping": 0, "has_split_merge": 0, "currency_mismatch": 0,
+            "supplier_exact_match": 1, "amount_abs_diff": 0.0},
+      "payment": {"amount": 150000, "currency": "CNY", "channel": "BANK_TRANSFER", "payer_id": "CP-01"},
+      "calib": {"label": "MATCHED", "conf": 0.99, "matched": 0.99, "partial": 0.005, "unmatched": 0.005}
+    },
+    "action": "REVIEW"
+  },
+  {
+    "id": "multi_mapping",
+    "desc": "多对多结构（一期排除）→ REVIEW",
+    "context": {
+      "f": {"is_multi_mapping": 1, "has_split_merge": 0, "currency_mismatch": 0,
+            "supplier_exact_match": 1, "amount_abs_diff": 0.0},
+      "payment": {"amount": 50000, "currency": "CNY", "channel": "BANK_TRANSFER", "payer_id": "CP-01"},
+      "calib": {"label": "MATCHED", "conf": 0.99, "matched": 0.99, "partial": 0.005, "unmatched": 0.005}
+    },
+    "action": "REVIEW"
+  },
+  {
+    "id": "supplier_mismatch",
+    "desc": "主体不一致 → REVIEW",
+    "context": {
+      "f": {"is_multi_mapping": 0, "has_split_merge": 0, "currency_mismatch": 0,
+            "supplier_exact_match": 0, "amount_abs_diff": 1000.0},
+      "payment": {"amount": 50000, "currency": "CNY", "channel": "BANK_TRANSFER", "payer_id": "CP-01"},
+      "calib": {"label": "MATCHED", "conf": 0.95, "matched": 0.95, "partial": 0.03, "unmatched": 0.02}
+    },
+    "action": "REVIEW"
+  },
+  {
+    "id": "low_conf_matched",
+    "desc": "MATCHED 但置信不足 → 落默认 REVIEW",
+    "context": {
+      "f": {"is_multi_mapping": 0, "has_split_merge": 0, "currency_mismatch": 0,
+            "supplier_exact_match": 1, "amount_abs_diff": 0.0},
+      "payment": {"amount": 50000, "currency": "CNY", "channel": "BANK_TRANSFER", "payer_id": "CP-01"},
+      "calib": {"label": "MATCHED", "conf": 0.7, "matched": 0.7, "partial": 0.2, "unmatched": 0.1}
+    },
+    "action": "REVIEW"
+  },
+  {
+    "id": "partial_high_conf",
+    "desc": "高置信 PARTIAL（无 AUTO 规则）→ 落默认 REVIEW",
+    "context": {
+      "f": {"is_multi_mapping": 0, "has_split_merge": 0, "currency_mismatch": 0,
+            "supplier_exact_match": 1, "amount_abs_diff": 2000.0},
+      "payment": {"amount": 80000, "currency": "CNY", "channel": "BANK_TRANSFER", "payer_id": "CP-01"},
+      "calib": {"label": "PARTIAL", "conf": 0.9, "matched": 0.1, "partial": 0.9, "unmatched": 0.0}
+    },
+    "action": "REVIEW"
+  }
+]
