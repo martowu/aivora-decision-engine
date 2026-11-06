@@ -39,9 +39,14 @@ def parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-def build_source(name: str, n: int) -> DataSource:
+def build_source(name: str, n: int, csv_dir: str | None = None):
     if name == "synthetic":
         return SyntheticSource(n=n)
+    if name == "csv":
+        if not csv_dir:
+            raise SystemExit("--source csv 需要 --csv-dir 指向原始表目录")
+        from csv_source import CsvReconSource
+        return CsvReconSource(csv_dir)
     raise SystemExit(f"unknown source: {name}（生产 ReconSource 待接入真实表结构）")
 
 
@@ -51,7 +56,8 @@ def main() -> None:
     ap.add_argument("--end", required=True, help="时间窗止 YYYY-MM-DD")
     ap.add_argument("--tenant", required=True, help="租户 id，逗号分隔（一期单租户）")
     ap.add_argument("--doc-type", default="AP", help="AP,AR 逗号分隔")
-    ap.add_argument("--source", default="synthetic", help="synthetic | recon（recon 未接入）")
+    ap.add_argument("--source", default="synthetic", help="synthetic | csv（原始表目录，演练/生产导出）")
+    ap.add_argument("--csv-dir", default=None, help="--source csv 的原始表目录（payments/invoices/recon_results）")
     ap.add_argument("--n", type=int, default=50, help="synthetic 样本数")
     ap.add_argument("--salt-file", required=True, help="假名化盐值文件路径（不进 git）")
     ap.add_argument("--output", required=True, help="输出目录")
@@ -71,7 +77,7 @@ def main() -> None:
         output_dir=Path(args.output),
         format=args.format,
     )
-    src = build_source(args.source, args.n)
+    src = build_source(args.source, args.n, args.csv_dir)
 
     # 1. 抽取 + 脱敏
     payments = [mask_record(dict(r), cfg) for r in src.fetch_payments(cfg)]
@@ -108,6 +114,7 @@ def main() -> None:
         "pipeline_version": PIPELINE_VERSION,
         "run_fingerprint": cfg.fingerprint(),
         "source": src.name,
+        "cleaning": getattr(src, "last_cleaning", None),  # CsvReconSource 清洗计数（盘点 §3 回填）
         "counts": {"payments": len(payments), "invoices": len(invoices), "labels": len(labels)},
         "quality": {"payments": q_pay.to_dict(), "invoices": q_inv.to_dict()},
         "files": {"payments": str(p_pay), "invoices": str(p_inv), "labels": str(p_lab)},
@@ -115,6 +122,7 @@ def main() -> None:
     (cfg.output_dir / "snapshot.json").write_text(
         json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"data_snapshot_hash": snap_hash,
+                      "cleaning": snap["cleaning"],
                       "counts": snap["counts"],
                       "quality_passed": True}, ensure_ascii=False))
 
