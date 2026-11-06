@@ -135,6 +135,7 @@ class DecisionService:
         model_action = dec.action                       # 模型/策略真实决策
         external_action = shadow_mask(model_action) if mode == "shadow" else model_action
 
+        probs_map = {l: p for l, p in zip(("MATCHED", "PARTIAL", "UNMATCHED"), out["probs"])}
         log = DecisionLog(
             decision_id=make_decision_id(),
             payment_id=pair.payment_id, invoice_id=pair.invoice_id,
@@ -144,7 +145,7 @@ class DecisionService:
             model_version=bundle.model_version,
             feature_version=bundle.feature_version,
             label=out["label"], conf=out["conf"],
-            probs={l: p for l, p in zip(("MATCHED", "PARTIAL", "UNMATCHED"), out["probs"])},
+            probs=probs_map,
             is_shadow=(mode == "shadow"), ts=__import__("time").time(),
         )
         self._store.append_decision(log)
@@ -154,7 +155,8 @@ class DecisionService:
             "action": external_action,             # 对外（shadow 掩码成 REVIEW）
             "model_action": model_action,          # 真实决策（审计用）
             "mode": mode,
-            "model": {"label": out["label"], "conf": out["conf"], "probs": out["probs"]},
+            # 响应契约（定稿 §2.2）：probabilities 为 {标签: 概率} 映射，与落库口径一致
+            "model": {"label": out["label"], "conf": out["conf"], "probs": probs_map},
             "policy": {"rule": dec.rule, "reason": dec.reason,
                        "version": policy.version},
             "feature_version": bundle.feature_version,

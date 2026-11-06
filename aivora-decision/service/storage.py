@@ -68,7 +68,9 @@ class JsonlStore(Store):
     """内存索引 + JSONL 持久化。线程安全（单进程服务足够）。"""
 
     def __init__(self, decisions_path: str | Path | None = None):
-        self._lock = threading.Lock()
+        # RLock：register_policy / rollback_policy 持锁后会再调
+        # set_current_policy_version（内部再取锁），普通 Lock 会死锁。
+        self._lock = threading.RLock()
         self._mem: list[DecisionLog] = []
         self._decisions_path = Path(decisions_path) if decisions_path else None
         self._policy_versions: list[dict] = []   # [{version, snapshot, ts, active}]

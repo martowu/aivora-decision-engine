@@ -139,6 +139,11 @@ def _high_conf(proba, y_true, y_pred, thr=0.9) -> dict:
 
 
 if __name__ == "__main__":
+    # Windows GBK 控制台安全：含 emoji/中文的输出统一按 UTF-8 写（不可编码字符替换）
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1500)
     ap.add_argument("--seed", type=int, default=42)
