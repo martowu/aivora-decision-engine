@@ -1,4 +1,4 @@
-"""decision-service 单测（W3，定稿 §2.2 / §7-E / W4 shadow）。
+"""decision-service 单测（W3，定稿 §2.2 / §2.2.7 / §7-E / W4 shadow）。
 
 覆盖：
 1. 503 全停：模型/策略未就绪 → /decide 503、/health not_ready
@@ -8,6 +8,10 @@
 5. 策略热切换 + 回滚（§2.2.1）
 6. shadow 推翻率（W4 门禁 §2.2.7）
 7. 推理端 isotonic 校准器分支（部署可还原）
+8. request_id 幂等重放（7 天窗口 → 409 返回首次结果，§2.2 错误码表）
+9. 审计查询 GET /v1/decisions/{request_id} + tenant_id 贯穿落库
+10. feedback 闭环（pending→approved upsert、终态须带结论、未知 404、status 过滤）
+11. 重启持久化：新 JsonlStore 重载同一 JSONL → 幂等/feedback 仍有效
 
 运行：
   ../../.venv/bin/python test_service.py
@@ -217,11 +221,122 @@ def test_inference_parity_and_isotonic():
     print("  [PASS] 推理端还原一致性 + isotonic 分支")
 
 
+def test_store_restart_persistence():
+    """重启（新 JsonlStore 同一路径）→ 幂等重放与 feedback 仍有效。"""
+    td = Path(tempfile.mkdtemp(prefix="aivora_rst_"))
+    art = td / "art"
+    make_artifact(art)
+    log_path = td / "logs" / "decision_logs.jsonl"
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    svc1 = DecisionService(JsonlStore(log_path), mode="production")
+    svc1.load_model(art)
+    svc1.load_policy(POLICY_YAML, golden)
+    req = sample_requests(1)[0]
+    b1 = svc1.decide(req, request_id="req-rst-001", tenant_id="t-demo")
+    assert b1["duplicate"] is False
+    svc1.submit_feedback("req-rst-001", "fin-01",
+                         review_action="MAINTAIN", status="approved")
+
+    svc2 = DecisionService(JsonlStore(log_path), mode="production")
+    svc2.load_model(art)
+    svc2.load_policy(POLICY_YAML, golden)
+    b2 = svc2.decide(req, request_id="req-rst-001", tenant_id="t-demo")
+    assert b2["duplicate"] is True and b2["decision_id"] == b1["decision_id"]
+    fb = svc2.feedback()
+    assert len(fb) == 1 and fb[0]["status"] == "approved"
+    print("  [PASS] 重启后幂等/feedback 仍有效（JSONL 重建索引）")
+
+
+def test_idempotent_replay():
+    client, svc, reqs, _ = build_ready("production")
+    req = dict(reqs[0])
+    req["request_id"] = "req-idem-001"
+    req["tenant_id"] = "t-demo"
+    r1 = client.post("/decide", json=req)
+    assert r1.status_code == 200
+    body1 = r1.json()
+    assert body1["duplicate"] is False and body1["request_id"] == "req-idem-001"
+    assert body1["tenant_id"] == "t-demo" and "model_version" in body1
+    # 窗口内重复（即便载荷不同）→ 409 + 首次结果，不重算
+    req2 = dict(req, pay_amount=req["pay_amount"] + 12345.0)
+    r2 = client.post("/decide", json=req2)
+    assert r2.status_code == 409, r2.text
+    b2 = r2.json()
+    assert b2["error_code"] == "DUPLICATE_REQUEST"
+    assert b2["decision_id"] == body1["decision_id"]
+    assert b2["action"] == body1["action"] and b2["model"] == body1["model"]
+    # /v1/decisions 别名同行为
+    assert client.post("/v1/decisions", json=req).status_code == 409
+    # 不落第二条日志
+    rows = client.get("/decisions", params={"limit": 500}).json()["decisions"]
+    assert sum(1 for x in rows if x["request_id"] == "req-idem-001") == 1
+    print("  [PASS] request_id 幂等重放（409 首次结果 / v1 别名 / 不落重库）")
+
+
+def test_audit_query():
+    client, svc, reqs, _ = build_ready("production")
+    req = dict(reqs[1])
+    req["request_id"] = "req-audit-001"
+    req["tenant_id"] = "t-demo"
+    b = client.post("/decide", json=req).json()
+    # 审计查询（定稿 §2.2.7：GET /v1/decisions/{request_id}）
+    r = client.get("/v1/decisions/req-audit-001")
+    assert r.status_code == 200
+    a = r.json()
+    assert a["decision_id"] == b["decision_id"] and a["tenant_id"] == "t-demo"
+    # tenant_id / request_id 贯穿落库
+    rows = client.get("/decisions", params={"limit": 500}).json()["decisions"]
+    row = next(x for x in rows if x["request_id"] == "req-audit-001")
+    assert row["tenant_id"] == "t-demo"
+    # 未知 request_id → 404
+    assert client.get("/decisions/req-nope").status_code == 404
+    print("  [PASS] 审计查询 /v1/decisions/{request_id}（tenant_id 落库 + 404）")
+
+
+def test_feedback_loop():
+    client, svc, reqs, _ = build_ready("production")
+    req = dict(reqs[2])
+    req["request_id"] = "req-fb-001"
+    b = client.post("/decide", json=req).json()
+    model_label = b["model"]["label"]
+    other_label = next(l for l in ("MATCHED", "PARTIAL", "UNMATCHED")
+                       if l != model_label)
+    # pending 反馈
+    r1 = client.post("/v1/feedback/req-fb-001",
+                     json={"reviewer": "fin-01", "review_action": "MAINTAIN"})
+    assert r1.status_code == 200 and r1.json()["status"] == "pending"
+    # 同 reviewer 再提 → upsert 为 approved 纠正（不产生第二条）
+    r2 = client.post("/v1/feedback/req-fb-001",
+                     json={"reviewer": "fin-01", "corrected_label": other_label,
+                           "reason": "差额为手续费", "status": "approved"})
+    assert r2.status_code == 200 and r2.json()["status"] == "approved"
+    rows = client.get("/v1/feedback").json()["feedback"]
+    mine = [x for x in rows if x["reviewer"] == "fin-01"]
+    assert len(mine) == 1 and mine[0]["corrected_label"] == other_label
+    # 终态（approved/rejected）必须携带结论
+    assert client.post("/v1/feedback/req-fb-001",
+                       json={"reviewer": "fin-02", "status": "approved"}
+                       ).status_code == 400
+    # 非法标签 / 未知决策
+    assert client.post("/v1/feedback/req-fb-001",
+                       json={"reviewer": "fin-02",
+                             "corrected_label": "REVIEW"}).status_code == 422
+    assert client.post("/feedback/req-unknown",
+                       json={"reviewer": "x", "review_action": "MAINTAIN"}
+                       ).status_code == 404
+    # status 过滤
+    assert client.get("/v1/feedback", params={"status": "approved"}
+                      ).json()["count"] == 1
+    print("  [PASS] feedback 闭环（pending→approved upsert / 终态须结论 / 404 / 过滤）")
+
+
 def main():
     tests = [test_503_not_ready, test_only_policy_not_ready,
              test_decide_roundtrip_and_persist, test_shadow_masks_auto,
              test_policy_rollback_and_hot_switch, test_shadow_override_rate,
-             test_inference_parity_and_isotonic]
+             test_inference_parity_and_isotonic,
+             test_store_restart_persistence, test_idempotent_replay,
+             test_audit_query, test_feedback_loop]
     passed = 0
     for t in tests:
         try:
