@@ -1,0 +1,15 @@
+# Aivora Decision Engine · Prometheus 配置（W4，profile: w4）
+# 定稿 §4 监控指标集：QPS、延迟直方图、action 分布、REVIEW 率、校准 vs 实际正确率（月更）、
+# 特征 PSI（月更）、422/503 率。告警：REVIEW 率 7 日均值偏移 >2σ；503 任意发生；422 率 >1%。
+#
+# 前置任务（W4）：decision-service 增加 /metrics 端点（prometheus_client，
+# 指标名建议：aivora_decisions_total{action,mode}、aivora_decision_latency_seconds、
+# aivora_review_rate、aivora_errors_total{code}），完成后取消下方注释。
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # - job_name: decision-service
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["decision-service:8090"]

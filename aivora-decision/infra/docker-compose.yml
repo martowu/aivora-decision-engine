@@ -1,0 +1,129 @@
+# ============================================================================
+# Aivora Decision Engine · 一期单机部署（定稿 §2.1：Docker Compose，不上 K8s）
+#
+#   cd aivora-decision/infra
+#   cp env.example .env          # .env 已 gitignore；生产改值或走 secrets 注入
+#   docker compose up -d --build
+#   docker compose --profile w4 up -d   # W4：加 Prometheus + Grafana
+#
+# 一期核心（默认）：
+#   decision-service —— 唯一新服务（FastAPI/Python 3.11，Postgres 后端）
+#   postgres:15      —— 五表 DDL 首次启动自动执行（migrations/ 挂载到 initdb 目录）
+#   minio            —— 工件存储预留（模型工件/数据快照/评估报告，定稿 §2.1）
+#
+# 环境变量：全部从 infra/.env 注入（12-factor；DSN 整体入 .env，不在此拼 URL）。
+# 安全契约：AIVORA_MODE 默认 shadow（最保守）；W4 门禁（推翻率 ≤2%）通过后
+# 再切 production（POST /admin/mode 或改 .env 后重建）。
+# ============================================================================
+name: aivora-decision
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aivora_decision
+      POSTGRES_USER: aivora
+      POSTGRES_PASSWORD: ${AIVORA_DB_PASSWORD:?set in infra/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 首次初始化自动执行 0001_init.sql（五表 + recon 任务注册）
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aivora -d aivora_decision"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # 本地调试时放开端口映射；生产内网不映射
+    # ports:
+    #   - "5432:5432"
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-10T01-41-32Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aivora}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in infra/.env}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 控制台
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 预留用途（定稿 §2.1）：模型工件、数据快照、评估报告。
+    # 当前 decision-service 从 artifacts 卷加载工件（model.txt+calibration.json+config.json），
+    # MinIO 客户端接线（训练产物上传/下载）列为 W4 任务，不在一期关键路径。
+
+  decision-service:
+    build:
+      context: ..                 # aivora-decision/
+      dockerfile: infra/Dockerfile
+    image: aivora-decision-service:dev
+    restart: unless-stopped
+    environment:
+      AIVORA_BASE: /app
+      # Postgres 后端（infra/migrations 自动建表）；不设置则退回 JsonlStore（MVP）
+      AIVORA_DB_URL: ${AIVORA_DB_URL:?set AIVORA_DB_URL in infra/.env}
+      AIVORA_ARTIFACT_DIR: /app/artifacts/recon-v1
+      AIVORA_POLICY_YAML: /app/policies/recon/engine.yaml
+      AIVORA_GOLDEN_JSON: /app/contracts/examples/recon.golden.json
+      AIVORA_MODE: shadow          # 默认 shadow（最保守）；W4 门禁后切 production
+    volumes:
+      # 挂载训练产出的工件目录（train.py 输出：model.txt / calibration.json / config.json / metrics.json）
+      - artifacts:/app/artifacts/recon-v1
+      - svclogs:/app/logs
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # W4 监控（定稿 §4：W4 上线 Prometheus + Grafana；此前用结构化日志）
+  #   docker compose --profile w4 up -d
+  # 前置任务（W4）：decision-service 增加 /metrics 端点（QPS、延迟直方图、
+  #   action 分布、REVIEW 率、422/503 率——定稿 §4 监控指标集），
+  #   届时取消 prometheus.yml 中 decision-service 抓取目标的注释。
+  # --------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["w4"]
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["w4"]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in infra/.env}
+    volumes:
+      - grafana:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  miniodata:
+  artifacts:
+  svclogs:
+  promdata:
+  grafana:

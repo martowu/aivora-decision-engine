@@ -118,6 +118,21 @@ def rule_baseline(feat: dict[str, float], amount: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 原始分数（logits）
+# ---------------------------------------------------------------------------
+
+def raw_logits(model: "lgb.LGBMClassifier", X: np.ndarray) -> np.ndarray:
+    """逐类原始分数（multiclass → (n, 3)）。
+
+    用 `booster_.predict(X, raw_score=True)`——与推理端（service/inference.py）
+    完全同一条路径（定稿：工件 = model.txt 原生 LightGBM）。
+    不再用 sklearn 包装层的 `decision_function`：lightgbm ≥4.5 已移除该 API
+    （2026-11-07 实测 4.5.0 报 AttributeError）。
+    """
+    return np.asarray(model.booster_.predict(X, raw_score=True))
+
+
+# ---------------------------------------------------------------------------
 # 校准（自定义 OvR，避免依赖 sklearn 内部 API 变动；可版本化、可单测）
 # ---------------------------------------------------------------------------
 
@@ -129,7 +144,7 @@ class OvRCalibrator:
 
     选择 raw logit 而非 predict_proba 作为校准输入：predict_proba 已含一次
     softmax 归一化，再逐类校准会双重变换；用逐类 logit（multiclass 下
-    decision_function 返回 num_class 维）更干净，符合 Platt 原意。
+    raw_score 返回 num_class 维）更干净，符合 Platt 原意。
     """
 
     def __init__(self, method: str):
@@ -137,7 +152,7 @@ class OvRCalibrator:
         self._fitters: dict[int, object] = {}
 
     def fit(self, base, X_calib: np.ndarray, y_calib: np.ndarray) -> "OvRCalibrator":
-        logits = base.decision_function(X_calib)  # (n, 3)
+        logits = raw_logits(base, X_calib)  # (n, 3)
         self._n_class = logits.shape[1]
         for c in range(self._n_class):
             z = logits[:, c]
@@ -153,7 +168,7 @@ class OvRCalibrator:
         return self
 
     def predict_proba(self, base, X: np.ndarray) -> np.ndarray:
-        logits = base.decision_function(X)
+        logits = raw_logits(base, X)
         out = np.zeros((X.shape[0], self._n_class))
         for c in range(self._n_class):
             out[:, c] = self._fitters[c].predict(logits[:, c].reshape(-1, 1))

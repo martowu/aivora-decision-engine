@@ -18,7 +18,8 @@
 
 ```bash
 cd training/pipelines
-.venv 在 aivora-decision/.venv（Python 3.14）
+.venv 在 aivora-decision/.venv（Python 3.10+；依赖见 service/requirements-service.txt，
+lightgbm 固定 >=4.0,<4.6——4.7.0 的 py3.10 wheel 在部分 Python 构建下原生崩溃）
 
 # 1) 特征单测
 ../.venv/bin/python test_features.py
@@ -54,6 +55,9 @@ cd training/pipelines
 2. **校准器随工件版本化**（§2.2.5）：calibration 集 ≥2000 → isotonic，否则 Platt。
    自定义 `OvRCalibrator`（逐类 logit → 二值校准 → 归一化），不依赖 sklearn
    `CalibratedClassifierCV(cv='prefit')`（该 API 在 sklearn 1.9 已移除）。
+   原始分数统一走 `raw_logits()`（`booster_.predict(raw_score=True)`）——
+   与推理端同一代码路径；lightgbm ≥4.5 已移除 sklearn 包装层
+   `decision_function`（2026-11-07 实测并修复）。
 
 3. **规则基线是对照组**（§2.2.4-1）：`rule_baseline` 确定性规则，
    模型必须在 macro-F1 上 +2pt 才过门禁；**未超基线 = 停止条件 3**（§2.3.4）。

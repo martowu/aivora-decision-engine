@@ -188,6 +188,12 @@ def test_snapshot_versioned():
     assert len(snap["rules"]) == 6
     # 快照可序列化（供 decision_policies 落库）
     json.dumps(snap, ensure_ascii=False)
+    # 快照 → 引擎无损往返（决策服务回滚重建路径依赖此性质）
+    eng2 = PolicyEngine.from_dict(snap)
+    assert eng2.policy_id == eng.policy_id and eng2.version == eng.version
+    assert eng2.default_action == eng.default_action
+    assert [(r.name, r.when, r.action) for r in eng2.rules] == \
+           [(r.name, r.when, r.action) for r in eng.rules]
 
 
 def test_invalid_action_rejected():

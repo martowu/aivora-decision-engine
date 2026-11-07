@@ -41,6 +41,9 @@ class DecisionLog:
     ts: float
     request_id: str = ""           # 幂等键（调用方提供；缺省服务端生成，不参与去重）
     tenant_id: str = "default"     # 一期单租户，字段先贯穿（行级隔离预留）
+    input_digest: str = ""         # 输入摘要 sha256（定稿 §2.2.8：明细按脱敏策略存 input_uri）
+    latency_ms: int = 0            # 推理+策略求值耗时（G-Shadow P95≤100ms 监控源）
+    degraded: bool = False         # 降级标志（503 全停不产生日志，恒 False）
     extra: dict = field(default_factory=dict)
 
     def to_row(self) -> dict:
@@ -53,7 +56,8 @@ class DecisionLog:
             "policy_version": self.policy_version, "model_version": self.model_version,
             "feature_version": self.feature_version, "label": self.label,
             "conf": self.conf, "probs": self.probs, "is_shadow": self.is_shadow,
-            "ts": self.ts, **self.extra,
+            "ts": self.ts, "input_digest": self.input_digest,
+            "latency_ms": self.latency_ms, "degraded": self.degraded, **self.extra,
         }
 
     @classmethod

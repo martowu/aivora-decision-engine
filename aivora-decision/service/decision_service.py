@@ -11,15 +11,22 @@ app.py 是它的 FastAPI 薄壳。
   AUTO 永不穿透（W4 门禁：推翻率 ≤2% 才切生产）。
 
 API 契约（定稿 §2.2.7 / v1.0 §2.2.7）：
-- request_id 幂等：调用方提供 request_id 时，7 天窗口内重复请求返回首次结果
-  （响应 duplicate=True，app 层映射 409 DUPLICATE_REQUEST）；
+- request_id 幂等：调用方提供 request_id 时，重复请求返回首次结果
+  （响应 duplicate=True，app 层映射 409 DUPLICATE_REQUEST）。
+  幂等键对逻辑请求唯一、重放语义永久有效（定稿"7 天窗口"= 最短保留期；
+  决策日志审计保留期更长，见 §2.2.2 全量落库）；
 - tenant_id 贯穿落库（一期单租户，行级隔离预留）；
+- input_digest：任务输入摘要 sha256（定稿 §2.2.8）；latency_ms：推理+策略耗时
+  （G-Shadow P95≤100ms 监控源）；
 - feedback：人工复核回写 (request_id, reviewer) 唯一，status pending→approved/rejected；
   仅 approved 的修正可进入下一版训练集（定稿 §3-8，训练侧规则）。
 """
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import threading
 import time
 from pathlib import Path
@@ -151,22 +158,23 @@ class DecisionService:
                tenant_id: str = "default") -> dict:
         """统一决策入口。
 
-        幂等（定稿 §2.2.7 错误码表）：request_id 提供且 7 天窗口内已有首次决策
-        → 不重算、不落新日志，返回首次结果（duplicate=True，app 层映射 409）。
+        幂等：request_id 提供且已有首次决策 → 不重算、不落新日志，
+        返回首次结果（duplicate=True，app 层映射 409）。重放语义永久有效
+        （幂等键对逻辑请求唯一；定稿 7 天窗口 = 最短保留期）。
         """
         bundle, policy, mode = self._require_ready()
         from inference import PairInput   # 延迟导入避免循环
 
-        # ---- 幂等短路（在推理之前，保证窗口内重复请求零副作用）----
+        # ---- 幂等短路（在推理之前，保证重复请求零副作用）----
         if request_id:
             prev = self._store.decision_by_request_id(request_id)
-            if prev is not None and \
-                    (time.time() - prev.ts) < self._idempotency_window_s:
+            if prev is not None:
                 resp = response_from_log(prev)
                 resp["duplicate"] = True
                 return resp
 
         req_id = request_id or make_request_id()
+        t0 = time.perf_counter()
 
         try:
             pair = PairInput(**pair_kwargs)
@@ -185,6 +193,12 @@ class DecisionService:
             dec = policy.decide(ctx)
         except PolicyCompileError as e:
             raise ServiceUnavailableError(f"策略编译错误 503: {e}") from e
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+
+        # 输入摘要（定稿 §2.2.8）：任务输入全部字段的规范化 sha256
+        digest_src = json.dumps(dataclasses.asdict(pair), sort_keys=True,
+                                ensure_ascii=False, default=str)
+        input_digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()
 
         model_action = dec.action                       # 模型/策略真实决策
         external_action = shadow_mask(model_action) if mode == "shadow" else model_action
@@ -201,11 +215,13 @@ class DecisionService:
             probs={l: p for l, p in zip(LABELS, out["probs"])},
             is_shadow=(mode == "shadow"), ts=time.time(),
             request_id=req_id, tenant_id=tenant_id,
+            input_digest=input_digest, latency_ms=latency_ms,
         )
         self._store.append_decision(log)
 
         resp = response_from_log(log)
         resp["duplicate"] = False
+        resp["latency_ms"] = latency_ms
         return resp
 
     # ---- 审计查询（GET /v1/decisions/{request_id}）----

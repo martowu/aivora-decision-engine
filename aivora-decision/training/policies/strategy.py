@@ -269,7 +269,12 @@ class PolicyEngine:
     # ---- 加载 / 编译 ----
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "PolicyEngine":
-        pol = d.get("policy", {})
+        """接受两种形态：
+        1. 原始策略文档：{"policy": {id, version, default_action}, "rules": [...]}
+        2. snapshot() 产物：{"policy_id", "version", "default_action", "rules": [...]}
+           （决策服务回滚时从存储快照重建引擎，必须无损往返）
+        """
+        pol = d.get("policy", {}) if isinstance(d.get("policy"), Mapping) else {}
         rules_raw = d.get("rules", [])
         rules = []
         seen = set()
@@ -285,8 +290,12 @@ class PolicyEngine:
                 name=name, when=r.get("when", ""), compiled=compiled,
                 action=str(r.get("action", "")).upper(),
                 reason=r.get("reason", "")))
-        return cls(pol.get("id", "policy"), pol.get("version", "0.0"),
-                   rules, pol.get("default_action", "REVIEW"))
+        return cls(
+            pol.get("id") or d.get("policy_id", "policy"),
+            str(pol.get("version") or d.get("version", "0.0")),
+            rules,
+            pol.get("default_action") or d.get("default_action", "REVIEW"),
+        )
 
     @classmethod
     def from_yaml(cls, path: str | Path,

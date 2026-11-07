@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "training" / "pi
 
 from decision_service import DecisionService, ServiceUnavailableError  # noqa: E402
 from inference import ArtifactLoadError  # noqa: E402
-from storage import JsonlStore  # noqa: E402
+from storage import JsonlStore, Store  # noqa: E402
 from strategy import PolicyCompileError  # noqa: E402
 
 
@@ -233,12 +233,16 @@ def build_app(service: DecisionService) -> FastAPI:
 def _default_service() -> DecisionService:
     """构建生产 service：默认 shadow 模式，启动即加载工件 + 策略。
 
+    存储后端：
+    - 设置 AIVORA_DB_URL → PostgresStore（生产，定稿 §2.1；DDL = infra/migrations）
+    - 未设置 → JsonlStore（MVP/本地）
     加载失败**不抛**——让 service 保持 not-ready，/decide 返回 503 全停。
     这符合 §7-E 安全契约：未就绪 = 全停交人工，绝不静默降级。
     加载异常打到 stderr，便于排障。
     """
     import os
     import sys
+    import time
     base = Path(os.environ.get("AIVORA_BASE",
                                str(Path(__file__).resolve().parent.parent)))
     artifact = os.environ.get("AIVORA_ARTIFACT_DIR", str(base / "artifacts" / "recon-v1"))
@@ -247,8 +251,25 @@ def _default_service() -> DecisionService:
                             str(base / "contracts" / "examples" / "recon.golden.json"))
     logs = os.environ.get("AIVORA_DECISION_LOGS", str(base / "logs" / "decision_logs.jsonl"))
     mode = os.environ.get("AIVORA_MODE", "shadow")  # 默认 shadow（最安全）
+    db_url = os.environ.get("AIVORA_DB_URL")
 
-    svc = DecisionService(JsonlStore(logs), mode=mode)
+    if db_url:
+        from postgres_store import PostgresStore
+        store: Store = PostgresStore(db_url)
+        # compose 已用 healthcheck 保证 Postgres 就绪；这里再做有限重试兜底
+        for attempt in range(30):
+            try:
+                store.open(timeout_s=5)
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == 29:
+                    print(f"[decision-service] Postgres 连接失败（保持 not-ready → 503 全停）: "
+                          f"{type(e).__name__}: {e}", file=sys.stderr)
+                time.sleep(1)
+    else:
+        store = JsonlStore(logs)
+
+    svc = DecisionService(store, mode=mode)
     for step in (lambda: svc.load_model(artifact),
                  lambda: svc.load_policy(policy,
                                          _read_json_or_none(golden))):
