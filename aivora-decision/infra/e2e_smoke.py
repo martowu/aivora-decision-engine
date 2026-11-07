@@ -35,6 +35,8 @@ DB_URL_LOCAL = "postgresql://aivora:aivora-dev@localhost:15432/aivora_decision"
 DB_URL = "postgresql://aivora:aivora-dev@host.docker.internal:15432/aivora_decision"
 PORT = "8092" if LOCAL else "8091"
 URL = f"http://127.0.0.1:{PORT}"
+# 每次运行唯一 request_id（Postgres 持久化 + 幂等语义：固定 id 重跑会得到 409 重放）
+RUN = time.strftime("%H%M%S")
 
 
 def sh(*args, check: bool = True) -> str:
@@ -119,7 +121,7 @@ def main() -> None:
                                     "feature_version")}, ensure_ascii=False))
 
     sample = {
-        "request_id": "e2e-req-0001", "tenant_id": "t-e2e",
+        "request_id": f"e2e-{RUN}-req-01", "tenant_id": "t-e2e",
         "payment_id": "PAY-E2E-1", "invoice_id": "INV-E2E-1",
         "pay_amount": 50000.0, "inv_amount": 50000.0,
         "pay_date": "2026-09-01", "inv_date": "2026-08-28",
@@ -142,11 +144,11 @@ def main() -> None:
     print("   重复: 409 DUPLICATE_REQUEST + 首次 decision_id 一致 ✓")
     # 5) 审计 + feedback
     print("== 5. 审计查询 + feedback 闭环 ==")
-    st3, b3 = http("GET", "/v1/decisions/e2e-req-0001")
+    st3, b3 = http("GET", f"/v1/decisions/{sample['request_id']}")
     assert st3 == 200 and b3["decision_id"] == b1["decision_id"]
     print(f"   审计: {b3['action']} rule={b3['policy']['rule']} "
           f"model={b3['model_version']} feature={b3['feature_version']}")
-    st4, b4 = http("POST", "/v1/feedback/e2e-req-0001",
+    st4, b4 = http("POST", f"/v1/feedback/{sample['request_id']}",
                    {"reviewer": "e2e-fin", "corrected_label": "PARTIAL",
                     "reason": "e2e 演练", "status": "approved"})
     assert st4 == 200 and b4["status"] == "approved", (st4, b4)
@@ -156,7 +158,7 @@ def main() -> None:
     # 6) psql 直查落库
     print("== 6. psql 直查 Postgres ==")
     for q, name in (
-        ("SELECT count(*) FROM decision_logs WHERE request_id='e2e-req-0001'", "logs"),
+        (f"SELECT count(*) FROM decision_logs WHERE request_id='{sample['request_id']}'", "logs"),
         ("SELECT status FROM decision_feedback WHERE reviewer='e2e-fin'", "feedback"),
         ("SELECT version FROM decision_models WHERE status='production'", "model_prod"),
         ("SELECT version FROM decision_policies WHERE status='active'", "policy_active"),
@@ -169,7 +171,7 @@ def main() -> None:
     print("== 7. 切 production（AUTO 可穿透）==")
     st6, _ = http("POST", "/admin/mode", {"mode": "production"})
     assert st6 == 200
-    st7, b7 = http("POST", "/decide", {**sample, "request_id": "e2e-req-0002"})
+    st7, b7 = http("POST", "/decide", {**sample, "request_id": f"e2e-{RUN}-req-02"})
     assert st7 == 200 and b7["mode"] == "production"
     print(f"   production: action={b7['action']}（shadow 同请求为 "
           f"{b1['action']}，真实决策 {b1['model_action']}）")

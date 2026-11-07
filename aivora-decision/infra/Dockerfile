@@ -37,10 +37,15 @@ RUN useradd -m appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
+# service/ 模块互相以顶层模块导入（decision_service/inference/storage/...），
+# WORKDIR 须为 service/（与本地 `uvicorn app:app` 同一启动方式；app.py 亦自带
+# sys.path 兜底）
+WORKDIR /app/service
+
 EXPOSE 8090
 
 # 存活探针：/health 恒 200（ready/not_ready 状态在 body；not_ready 时 /decide 503 全停）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=3)" || exit 1
 
-CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8090", "--workers", "1"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090", "--workers", "1"]

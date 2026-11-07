@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "training" / "pipelines"))
 
 from decision_service import DecisionService, ServiceUnavailableError  # noqa: E402
