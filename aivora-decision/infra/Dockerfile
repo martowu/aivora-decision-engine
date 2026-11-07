@@ -23,6 +23,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# lightgbm linux wheel 依赖 OpenMP（slim 基础镜像不含 libgomp1）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY service/requirements-service.txt ./requirements-service.txt
 RUN pip install --no-cache-dir -r requirements-service.txt
 
