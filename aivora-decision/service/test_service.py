@@ -317,10 +317,10 @@ def test_feedback_loop():
     assert client.post("/v1/feedback/req-fb-001",
                        json={"reviewer": "fin-02", "status": "approved"}
                        ).status_code == 400
-    # 非法标签 / 未知决策
+    # 非法标签（schema 校验）→ 400 SCHEMA_INVALID；未知决策 → 404
     assert client.post("/v1/feedback/req-fb-001",
                        json={"reviewer": "fin-02",
-                             "corrected_label": "REVIEW"}).status_code == 422
+                             "corrected_label": "REVIEW"}).status_code == 400
     assert client.post("/feedback/req-unknown",
                        json={"reviewer": "x", "review_action": "MAINTAIN"}
                        ).status_code == 404
@@ -330,9 +330,22 @@ def test_feedback_loop():
     print("  [PASS] feedback 闭环（pending→approved upsert / 终态须结论 / 404 / 过滤）")
 
 
+def test_decide_schema_invalid_400():
+    client, svc, reqs, _ = build_ready("production")
+    # 缺必填字段（仅 pay_amount）→ 400 SCHEMA_INVALID（对齐契约，非默认 422）
+    r = client.post("/decide", json={"pay_amount": 100.0})
+    assert r.status_code == 400, r.text
+    assert r.json()["error_code"] == "SCHEMA_INVALID"
+    # 合法请求携带 invoice_number → 200，字段透传到特征（不报错即可）
+    req = dict(reqs[0]); req["invoice_number"] = "INV-9999"
+    assert client.post("/decide", json=req).status_code == 200
+    print("  [PASS] /decide schema 失败→400 SCHEMA_INVALID / invoice_number 透传")
+
+
 def main():
     tests = [test_503_not_ready, test_only_policy_not_ready,
-             test_decide_roundtrip_and_persist, test_shadow_masks_auto,
+             test_decide_roundtrip_and_persist, test_decide_schema_invalid_400,
+             test_shadow_masks_auto,
              test_policy_rollback_and_hot_switch, test_shadow_override_rate,
              test_inference_parity_and_isotonic,
              test_store_restart_persistence, test_idempotent_replay,

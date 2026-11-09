@@ -73,7 +73,8 @@
 | `supplier_id` | `invoices.customer_id` | 原样 | |
 | `supplier_name` | `invoices.customer_name` | 原样 | 特征 `supplier_fuzzy_score` 依赖 |
 | `channel` | `payments.source` | `BANK_FEED→BANK_TRANSFER`，`MANUAL/API→OTHER`（other 渠道特征=0，登记影响） | |
-| `reference` | `payments.payment_reference` | 原样（含票号，如 `INV-1005` → `invoice_number_in_reference` 特征）；空串兜底 | |
+| `reference` | `payments.payment_reference` | 原样（含票号文本，如 `INV-1005`）；空串兜底 | 仅喂 `reference_len_norm`；票号命中判定见下一行 `invoice_number` |
+| `invoice_number` | `invoices.invoice_number` | 原样（人眼可读票号，如 `INV-1005`）；无则空串 | **`invoice_number_in_reference`/`invoice_number_fuzzy_hit` 特征输入**：与 `reference` 比对；`invoice_id` 是 UUID，**不能**用于此匹配（历史 bug 已修，见文末"变更记录"） |
 | `note` | —（Recon 发票无备注字段） | `""` | **特征缺口**：`note_len_norm` 恒 0（一期可接受，登记） |
 | `fee` | —（Recon 无手续费字段） | `0.0` | **特征缺口**：`has_fee` 恒 0；差异类型（FX/SHORT_PAY）在 matching results 侧，不在请求输入（见 §6 扩展） |
 | `counterparty_match_rate_hist` | worker 计算（PIT） | 该 `payer_id` 在 `pay_date` **之前**的付款中，有胜出对（CONFIRMED/AUTO_MATCHED）的占比；无历史 → 0.5 | 与 `features.py` None→0.5 缺省一致 |
@@ -93,6 +94,7 @@
   "tenant_id": "8e5ea0e4-8651-4bd6-8411-e47b3fe2d645",
   "payment_id": "5350d075-2d30-4778-924e-58c5e55f7167",
   "invoice_id": "9be47d70-3425-45cb-b699-d15896fe5386",
+  "invoice_number": "INV-1005",
   "pay_amount": 500.0, "inv_amount": 500.0,
   "pay_currency": "USD", "inv_currency": "EUR",
   "pay_date": "2026-09-14", "inv_date": "2026-08-28",
@@ -115,9 +117,12 @@
   "mode": "shadow", "is_shadow": true,
   "model": {"label": "MATCHED", "conf": 0.98, "probs": {"MATCHED": 0.98, "PARTIAL": 0.01, "UNMATCHED": 0.01}},
   "policy": {"rule": "auto_matched_high_conf", "reason": "…", "version": "1.0"},
-  "model_version": "recon-v1:…", "feature_version": "1.0", "latency_ms": 2, "duplicate": false
+  "model_version": "recon-v1:…", "feature_version": "1.1", "latency_ms": 2, "duplicate": false
 }
 ```
+
+> 说明：§4.1 示例是 USD/EUR 跨币种对，真实路由会被 `struct_currency_mismatch` 硬规则判 **REVIEW**；
+> §4.2 则是**另一条**"高置信干净对"的通用 AUTO 示例（二者刻意不是同一样本）。§7 联调请分别构造对应样例。
 
 错误码（worker 行为）：
 
@@ -135,7 +140,7 @@
   "model_action": "AUTO", "model_label": "MATCHED",
   "probs": {"MATCHED": 0.98, "PARTIAL": 0.01, "UNMATCHED": 0.01},
   "policy_rule": "auto_matched_high_conf",
-  "model_version": "…", "policy_version": "1.0", "feature_version": "1.0",
+  "model_version": "…", "policy_version": "1.0", "feature_version": "1.1",
   "latency_ms": 2, "decided_at": "…",
   "human_truth": null,          // 回填前为 null
   "truth_filled_at": null
@@ -172,7 +177,7 @@ human truth 回填（轮询 `/matching/results`，按 payment_id+invoice_id join
 | R1 | 专用 **shadow 只读服务账号**（MEMBER 角色即可，API 消费） | 独立账号、凭证入密钥管理、审计可区分（actor_email 前缀 `shadow-`） | ⏳ 待确认 |
 | R2 | Shadow 流量租户选择 + 授权记录（盘点 1.7 口径） | 选月交易量最大的生产租户；授权文档编号入契约附录 | ⏳ 待确认 |
 | R3 | 轮询 vs 推送：Recon 是否有 webhook/事件出口可替代轮询 | 探查未见 webhook 端点；阶段一用轮询，若有事件出口优先 | ⏳ 待确认 |
-| R4 | 扩展输入（可选，提升特征完整度）：请求中携带 `difference_type`/手续费信息 | 若 Recon 内嵌调用（阶段二）时把 matching result 的差异字段随请求传入，`has_fee`/FX 特征即补齐；**阶段一 worker 也可把 `/matching/results` 的 `difference_type` 映射进 `fee` 语义（FX→币种不符 flag 已覆盖，SHORT_PAY→保持 PARTIAL 口径）** | ⏳ 待确认 |
+| R4 | 扩展输入（可选，提升特征完整度）：请求随附 `difference_type` / 真实手续费 / **`invoice_number`** | **`fee` 保持 0**（仅当有可验证手续费才填非零）——差异类型不得塞进 `fee`，否则会误触发 `has_fee` 特征：FX 走既有 `currency_mismatch`，SHORT_PAY 走 PARTIAL 标签口径；**票号特征依赖 `invoices.invoice_number`**（人眼可读号，非 UUID `invoice_id`），阶段一 worker 从 invoices 侧带入、阶段二内嵌调用请随 matching result 一并传出 `invoice_number` | ⏳ 待确认 |
 | R5 | `/matching/results` 慢查询（30s+）原因与 SLA | Shadow 期可接受（轮询异步）；灰度期内嵌调用时**必须**给出 P95 SLA（≤200ms 目标） | ⏳ 待确认 |
 | R6 | 阶段二内嵌调用的开发排期（W4 灰度前） | 按 §7-B 兜底：排期不到位 → 灰度入口用"worker 近实时轮询（30s）"顶替，报告标注 | ⏳ 待排期 |
 
@@ -206,3 +211,15 @@ human truth 回填（轮询 `/matching/results`，按 payment_id+invoice_id join
 2. §六 R1–R6 逐项闭环（书面确认）；
 3. 版本号升 v1.0、双方签字 → 进入 W3 联调（只实现不讨论，定稿 §7-B）；
 4. 任何变更走 §7-H 审批流（策略/契约同仓库评审，24h 内归档）。
+
+---
+
+## 变更记录（冻结前，代码走查发现的契约↔实现不一致已就地修正）
+
+- **v0.1 补丁 ①（票号特征）**：`invoice_number_in_reference`/`fuzzy` 原实现误用 UUID `invoice_id` 比对 `reference`，对真实数据恒为 0（合成/单测因 `invoice_id` 恰为人类可读号而掩盖）。已改为消费新增的 `invoice_number` 字段（`DecideRequest`/`PairInput`），`FEATURE_VERSION` 1.0 → **1.1**。§3 已加 `invoice_number` 映射行、R4 已并入该扩展请求。
+- **v0.1 补丁 ②（错误码）**：`/decide` schema 校验失败此前返回 FastAPI 默认 **422**，与本契约 §4.2 及 README 约定的 **400 SCHEMA_INVALID** 不符。已在 `app.py` 加 `RequestValidationError` 处理器统一发 400；worker 按 §4.2 表路由异常池成立。
+- **v0.1 补丁 ③（fee 语义）**：R4 原写法把 `difference_type` 映射进 `fee`，会误触发 `has_fee`。已改为 `fee` 保持 0，FX 走 `currency_mismatch`、SHORT_PAY 走 PARTIAL 标签。
+
+> 遗留（待 Recon 走查会一并定调）：§4.3 推翻率 join 口径 —— 契约写 `payment_id+invoice_id`，
+> 现 `ShadowReporter` 仅按 `payment_id`（因多对多恒被硬规则路由 REVIEW 而未暴雷）。冻结前二选一：
+> 代码改元组键，或本文注明"多对多→REVIEW 故 payment_id 足够"。

@@ -21,7 +21,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
-FEATURE_VERSION = "1.0"
+# 1.1：票号特征改为消费独立的 invoice_number 字段（旧版误用 UUID invoice_id 比对 reference）
+FEATURE_VERSION = "1.1"
 
 LABELS = ("MATCHED", "PARTIAL", "UNMATCHED")
 
@@ -84,6 +85,9 @@ class PairInput:
     # —— 结构 flag（上游判定）——
     is_multi_mapping: bool
     has_split_merge: bool
+    # —— 发票业务编号（人眼可读，如 INV-1005；真实系统 invoice_id 为 UUID，
+    #    reference 附言里携带的是该编号）。默认 "" 兼容未透传的调用点。——
+    invoice_number: str = ""
 
 
 def _norm_name(s: str) -> str:
@@ -120,10 +124,11 @@ def build_features(inp: PairInput) -> dict[str, float]:
         inp.payer_id) == _norm_name(inp.supplier_id) else 0.0
     fuzzy = _fuzzy(str(inp.payer_id), str(inp.supplier_id))
     ref = inp.reference or ""
-    inv_no_exact = 1.0 if inp.invoice_id and inp.invoice_id in ref else 0.0
-    inv_no_fuzzy = 1.0 if _fuzzy(inp.invoice_id, ref) >= 0.8 else 0.0
     currency_mm = 1.0 if inp.pay_currency != inp.inv_currency else 0.0
     fee_present = 1.0 if inp.fee and inp.fee > 0 else 0.0
+    inv_no = (inp.invoice_number or "").strip()
+    inv_no_exact = 1.0 if inv_no and inv_no in ref else 0.0
+    inv_no_fuzzy = 1.0 if inv_no and _fuzzy(inv_no, ref) >= 0.8 else 0.0
 
     feats: dict[str, float] = {
         "amount_diff": round(amount_diff, 4),

@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -58,6 +60,7 @@ class DecideRequest(BaseModel):
     # —— 任务输入（与 PairInput 对齐）——
     payment_id: str
     invoice_id: str
+    invoice_number: str = ""        # 发票业务编号（人眼可读，如 INV-1005；reference 携带的是它）
     pay_amount: float = Field(ge=0)
     inv_amount: float = Field(ge=0)
     pay_currency: str = "CNY"
@@ -126,6 +129,14 @@ def build_app(service: DecisionService) -> FastAPI:
     @app.exception_handler(ServiceUnavailableError)
     async def _503(request, exc: ServiceUnavailableError):
         return JSONResponse(status_code=503, content={"error": str(exc), "action": "HUMAN"})
+
+    @app.exception_handler(RequestValidationError)
+    async def _400_schema(request, exc: RequestValidationError):
+        # 契约 §2.2.7 / README / Shadow 契约 §4.2 均约定 schema 校验失败 = 400 SCHEMA_INVALID
+        # （覆盖 FastAPI 默认的 422，避免 worker 按 400 路由异常池时漏判）
+        return JSONResponse(status_code=400,
+                            content={"error_code": "SCHEMA_INVALID",
+                                     "errors": jsonable_encoder(exc.errors())})
 
     @app.post("/decide")
     @app.post("/v1/decisions")

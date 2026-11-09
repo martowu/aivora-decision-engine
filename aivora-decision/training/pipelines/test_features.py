@@ -27,6 +27,7 @@ def make(**over) -> PairInput:
         channel="BANK_TRANSFER", reference="付款 INV-0001 全额", note="备注",
         fee=0.0, counterparty_match_rate_hist=0.97,
         is_first_counterparty=False, is_multi_mapping=False, has_split_merge=False,
+        invoice_number="INV-0001",
     )
     base.update(over)
     return PairInput(**base)
@@ -101,6 +102,24 @@ def test_missing_text_safe():
     f = build_features(make(reference="", note=""))
     assert f["reference_len_norm"] == 0.0
     assert f["invoice_number_in_reference"] == 0.0
+
+
+def test_invoice_number_not_uuid():
+    """回归：真实数据 invoice_id 为 UUID、reference 携带的是 invoice_number。"""
+    uuid = "9be47d70-3425-45cb-b699-d15896fe5386"
+    # (a) UUID invoice_id + 票号命中 reference → 1.0
+    f = build_features(make(invoice_id=uuid, invoice_number="INV-1005",
+                            reference="回款 INV-1005 已核对"))
+    assert f["invoice_number_in_reference"] == 1.0
+    # (b) reference 里塞的是 UUID 本身、但票号为空 → 0.0（UUID 不再驱动该特征）
+    f = build_features(make(invoice_id=uuid, invoice_number="",
+                            reference=f"奇怪 {uuid} 备注"))
+    assert f["invoice_number_in_reference"] == 0.0
+    # (c) 票号未出现在 reference → 0.0
+    f = build_features(make(invoice_id=uuid, invoice_number="INV-9999",
+                            reference="回款 INV-1005 已核对"))
+    assert f["invoice_number_in_reference"] == 0.0
+    assert f["invoice_number_fuzzy_hit"] == 0.0
 
 
 def test_channel_onehot_exclusive():

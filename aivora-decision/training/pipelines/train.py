@@ -29,8 +29,8 @@ import lightgbm as lgb
 from sklearn.metrics import brier_score_loss, confusion_matrix, f1_score
 from sklearn.model_selection import GroupShuffleSplit
 
-from features import (FEATURE_NAMES, LABELS, PairInput, build_features,
-                      is_complex, to_vector)
+from features import (FEATURE_NAMES, FEATURE_VERSION, LABELS, PairInput,
+                      build_features, is_complex, to_vector)
 
 # 训练配置（定稿：配置入库，改参数须版本 +0.1）
 LGBM_PARAMS = dict(
@@ -386,14 +386,14 @@ def train_and_evaluate(
     if len(Xcal) < CALIB_MIN_FOR_ISOTONIC:
         platt = platt_from_calibrator(cal)
         calib_doc = {**platt.to_dict(), "calibration_set_size": int(len(Xcal)),
-                     "feature_version": "1.0"}
+                     "feature_version": FEATURE_VERSION}
     else:  # isotonic：逐类存 x 断点 / y 值，服务侧线性还原
         iso = {"x": [list(f.x_) for f in cal._fitters.values()],
                "y": [list(f.y_) for f in cal._fitters.values()],
                "x_threshold": [list(getattr(f, "x_threshold_", []))
                                for f in cal._fitters.values()]}
         calib_doc = {"method": "isotonic", "calibration_set_size": int(len(Xcal)),
-                     "feature_version": "1.0", "iso": iso}
+                     "feature_version": FEATURE_VERSION, "iso": iso}
     calib_path.write_text(json.dumps(calib_doc, indent=2))
     config_path = artifact_dir / "config.json"
     config_path.write_text(json.dumps({

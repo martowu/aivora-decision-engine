@@ -73,6 +73,7 @@ def main() -> None:
             is_first_counterparty=first,
             is_multi_mapping=n_per_pay.get(r["payment_id"], 0) >= 2,
             has_split_merge=False,
+            invoice_number=i.get("invoice_number", ""),
         )
         out = predict(bundle, pair)
         f = out["features"]

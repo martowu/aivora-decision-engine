@@ -227,6 +227,7 @@ def to_pair_inputs(records: list[dict]):
             is_first_counterparty=r["is_first_counterparty"],
             is_multi_mapping=r["is_multi_mapping"],
             has_split_merge=r["has_split_merge"],
+            invoice_number=r.get("invoice_number", r["invoice_id"]),
         ))
         labels.append(r["true_label"])
     return inputs, labels
