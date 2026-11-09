@@ -55,12 +55,14 @@ def main() -> None:
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
     ap.add_argument("--tenant", required=True)
+    ap.add_argument("--doc-type", default="AP", help="AP 或 AR（D5 决策 4；Recon 生产为 AR）")
     a = ap.parse_args()
 
     sql = extract_sql_fence(Path(a.report))
     sql = (sql.replace("<start>", a.start)
            .replace("<end>", a.end)
-           .replace("<tenant>", a.tenant))
+           .replace("<tenant>", a.tenant)
+           .replace("<doc_type>", a.doc_type))
     raw = Path(a.raw)
     for t in ("payments", "invoices", "recon_results"):
         if not (raw / f"{t}.csv").exists():
